@@ -26,14 +26,23 @@ let mapData = [];
 let caveData = [];
 let recipeData = {};
 let camera = { x: 0, y: 0 };
-let mouseX = 0, mouseY = 0;
 let targetX = 0, targetY = 0;
 let isMoving = false;
 let showCraft = false;
+let isMouseDown = false;
 
-// ====================== XỬ LÝ SOCKET ======================
+// ====================== BIẾN WASD ======================
+const keys = {
+    w: false,
+    a: false,
+    s: false,
+    d: false
+};
+
+// ====================== SOCKET ======================
 
 socket.on('init', (data) => {
+    console.log('✅ Đã nhận dữ liệu init!');
     myId = data.id;
     mapData = data.map;
     caveData = data.caves;
@@ -43,15 +52,17 @@ socket.on('init', (data) => {
     gameData.items = data.items;
     
     myPlayer = gameData.players[myId];
-    targetX = myPlayer.x;
-    targetY = myPlayer.y;
+    if (myPlayer) {
+        targetX = myPlayer.x;
+        targetY = myPlayer.y;
+        console.log('✅ Đã tạo người chơi tại:', myPlayer.x, myPlayer.y);
+    }
     
     updateUI();
     renderCraftUI();
 });
 
 socket.on('gameState', (data) => {
-    // Cập nhật dữ liệu game
     gameData.players = data.players;
     gameData.monsters = data.monsters;
     gameData.items = data.items;
@@ -123,7 +134,6 @@ socket.on('pickupSuccess', (data) => {
 socket.on('radarResult', (data) => {
     if (data) {
         showNotification(`📡 Tìm thấy Boss Wasp tại (${Math.round(data.x)}, ${Math.round(data.y)})!`, '#ffd700');
-        // Đánh dấu trên minimap
         drawMinimap(data.x, data.y);
     } else {
         showNotification('📡 Không tìm thấy Boss nào!', '#ff9800');
@@ -187,17 +197,34 @@ function showNotification(text, color = '#ffd700') {
     el._timeout = setTimeout(() => el.classList.remove('show'), 2000);
 }
 
-// ====================== CRAFT UI ======================
+// ====================== PHÍM TẮT ======================
 
 document.addEventListener('keydown', (e) => {
+    // WASD
+    if (e.key === 'w' || e.key === 'W') { keys.w = true; e.preventDefault(); }
+    if (e.key === 'a' || e.key === 'A') { keys.a = true; e.preventDefault(); }
+    if (e.key === 's' || e.key === 'S') { keys.s = true; e.preventDefault(); }
+    if (e.key === 'd' || e.key === 'D') { keys.d = true; e.preventDefault(); }
+    
+    // Craft
     if (e.key === 'c' || e.key === 'C') {
         showCraft = !showCraft;
         document.getElementById('craftUI').classList.toggle('hidden', !showCraft);
+        e.preventDefault();
     }
     
+    // Vào hang
     if (e.key === 'e' || e.key === 'E') {
         handleCaveInteraction();
+        e.preventDefault();
     }
+});
+
+document.addEventListener('keyup', (e) => {
+    if (e.key === 'w' || e.key === 'W') { keys.w = false; e.preventDefault(); }
+    if (e.key === 'a' || e.key === 'A') { keys.a = false; e.preventDefault(); }
+    if (e.key === 's' || e.key === 'S') { keys.s = false; e.preventDefault(); }
+    if (e.key === 'd' || e.key === 'D') { keys.d = false; e.preventDefault(); }
 });
 
 function closeCraft() {
@@ -213,7 +240,6 @@ function handleCaveInteraction() {
         return;
     }
     
-    // Tìm hang gần nhất
     let nearestCave = null;
     let minDist = Infinity;
     caveData.forEach(cave => {
@@ -231,7 +257,125 @@ function handleCaveInteraction() {
     }
 }
 
-// ====================== GAME LOOP (RENDER) ======================
+// ====================== XỬ LÝ DI CHUYỂN ======================
+
+// Click chuột
+canvas.addEventListener('mousedown', (e) => {
+    if (e.button === 0) {
+        isMouseDown = true;
+        handleCanvasClick(e);
+    }
+});
+
+canvas.addEventListener('mouseup', (e) => {
+    if (e.button === 0) {
+        isMouseDown = false;
+    }
+});
+
+canvas.addEventListener('mousemove', (e) => {
+    if (isMouseDown) {
+        handleCanvasClick(e);
+    }
+});
+
+function handleCanvasClick(e) {
+    if (!myPlayer) return;
+    
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    
+    const mouseX = (e.clientX - rect.left) * scaleX;
+    const mouseY = (e.clientY - rect.top) * scaleY;
+    const worldX = mouseX + camera.x;
+    const worldY = mouseY + camera.y;
+    
+    // Kiểm tra click vào quái
+    let attacked = false;
+    gameData.monsters.forEach(monster => {
+        const screenX = monster.x - camera.x;
+        const screenY = monster.y - camera.y;
+        const dist = Math.sqrt((mouseX - screenX) ** 2 + (mouseY - screenY) ** 2);
+        if (dist < monster.size + 15) {
+            socket.emit('attack', monster.id);
+            attacked = true;
+        }
+    });
+    
+    // Nếu không tấn công, di chuyển
+    if (!attacked) {
+        targetX = worldX;
+        targetY = worldY;
+        isMoving = true;
+        console.log('🎯 Di chuyển đến:', worldX, worldY);
+    }
+}
+
+// ====================== VÒNG LẶP DI CHUYỂN (CÓ WASD) ======================
+
+function updateMovement() {
+    if (!myPlayer) return;
+    
+    const speed = myPlayer.speed * (myPlayer.speedMod || 1);
+    let dx = 0, dy = 0;
+    let moved = false;
+    
+    // === XỬ LÝ WASD ===
+    if (keys.w) { dy = -speed; moved = true; }
+    if (keys.s) { dy = speed; moved = true; }
+    if (keys.a) { dx = -speed; moved = true; }
+    if (keys.d) { dx = speed; moved = true; }
+    
+    // Nếu di chuyển bằng WASD
+    if (moved) {
+        // Chuẩn hóa vector để di chuyển đều các hướng
+        if (dx !== 0 && dy !== 0) {
+            dx = dx / Math.sqrt(2);
+            dy = dy / Math.sqrt(2);
+        }
+        
+        myPlayer.x += dx;
+        myPlayer.y += dy;
+        
+        // Giới hạn trong map
+        myPlayer.x = Math.max(20, Math.min(980, myPlayer.x));
+        myPlayer.y = Math.max(20, Math.min(980, myPlayer.y));
+        
+        // Gửi vị trí lên server
+        socket.emit('move', { x: myPlayer.x, y: myPlayer.y });
+        
+        // Tự động nhặt đồ
+        gameData.items.forEach(item => {
+            const dist = Math.sqrt((myPlayer.x - item.x) ** 2 + (myPlayer.y - item.y) ** 2);
+            if (dist < 50) {
+                socket.emit('pickup');
+            }
+        });
+    }
+    
+    // Nếu có click chuột di chuyển (ưu tiên WASD hơn)
+    if (isMoving && !moved) {
+        const dx2 = targetX - myPlayer.x;
+        const dy2 = targetY - myPlayer.y;
+        const dist = Math.sqrt(dx2 * dx2 + dy2 * dy2);
+        
+        if (dist < 2) {
+            isMoving = false;
+            return;
+        }
+        
+        const step = Math.min(speed, dist);
+        myPlayer.x += (dx2 / dist) * step;
+        myPlayer.y += (dy2 / dist) * step;
+        
+        socket.emit('move', { x: myPlayer.x, y: myPlayer.y });
+    }
+    
+    requestAnimationFrame(updateMovement);
+}
+
+// ====================== VẼ GAME ======================
 
 function draw() {
     if (!myPlayer) {
@@ -273,7 +417,6 @@ function draw() {
         if (screenX > -50 && screenX < canvas.width + 50 && 
             screenY > -50 && screenY < canvas.height + 50) {
             
-            // Body
             ctx.fillStyle = monster.color;
             ctx.beginPath();
             ctx.arc(screenX, screenY, monster.size, 0, Math.PI * 2);
@@ -282,23 +425,16 @@ function draw() {
             ctx.lineWidth = 1;
             ctx.stroke();
             
-            // HP bar
             const hpPercent = monster.hp / monster.maxHp;
             ctx.fillStyle = 'rgba(0,0,0,0.6)';
             ctx.fillRect(screenX - 20, screenY - monster.size - 10, 40, 4);
             ctx.fillStyle = hpPercent > 0.5 ? '#4CAF50' : hpPercent > 0.2 ? '#ff9800' : '#ff4444';
             ctx.fillRect(screenX - 20, screenY - monster.size - 10, 40 * hpPercent, 4);
             
-            // Tên
             ctx.fillStyle = 'white';
             ctx.font = '10px Arial';
             ctx.textAlign = 'center';
             ctx.fillText(monster.type, screenX, screenY - monster.size - 15);
-            
-            // Click để tấn công
-            monster._screenX = screenX;
-            monster._screenY = screenY;
-            monster._radius = monster.size;
         }
     });
     
@@ -311,7 +447,6 @@ function draw() {
         if (screenX > -50 && screenX < canvas.width + 50 && 
             screenY > -50 && screenY < canvas.height + 50) {
             
-            // Body
             ctx.fillStyle = '#ff6b35';
             ctx.beginPath();
             ctx.arc(screenX, screenY, p.radius, 0, Math.PI * 2);
@@ -320,7 +455,6 @@ function draw() {
             ctx.lineWidth = 2;
             ctx.stroke();
             
-            // HP bar
             const hpPercent = p.hp / p.maxHp;
             ctx.fillStyle = 'rgba(0,0,0,0.6)';
             ctx.fillRect(screenX - 20, screenY - p.radius - 10, 40, 4);
@@ -334,11 +468,10 @@ function draw() {
         }
     });
     
-    // Vẽ người chơi hiện tại (lớn hơn và nổi bật)
+    // Vẽ người chơi hiện tại
     const screenX = myPlayer.x - camera.x;
     const screenY = myPlayer.y - camera.y;
     
-    // Glow effect
     const gradient = ctx.createRadialGradient(screenX, screenY, 0, screenX, screenY, 40);
     gradient.addColorStop(0, 'rgba(255, 215, 0, 0.3)');
     gradient.addColorStop(1, 'rgba(255, 215, 0, 0)');
@@ -347,7 +480,6 @@ function draw() {
     ctx.arc(screenX, screenY, 40, 0, Math.PI * 2);
     ctx.fill();
     
-    // Body
     ctx.fillStyle = '#ffd700';
     ctx.shadowColor = '#ffd700';
     ctx.shadowBlur = 15;
@@ -359,20 +491,17 @@ function draw() {
     ctx.lineWidth = 2;
     ctx.stroke();
     
-    // HP bar
     const hpPercent = myPlayer.hp / myPlayer.maxHp;
     ctx.fillStyle = 'rgba(0,0,0,0.7)';
     ctx.fillRect(screenX - 25, screenY - myPlayer.radius - 15, 50, 6);
     ctx.fillStyle = hpPercent > 0.5 ? '#4CAF50' : hpPercent > 0.2 ? '#ff9800' : '#ff4444';
     ctx.fillRect(screenX - 25, screenY - myPlayer.radius - 15, 50 * hpPercent, 6);
     
-    // Level
     ctx.fillStyle = 'white';
     ctx.font = 'bold 14px Arial';
     ctx.textAlign = 'center';
     ctx.fillText(`⭐${myPlayer.level}`, screenX, screenY - myPlayer.radius - 22);
     
-    // Equipments indicator
     let equipText = '';
     if (myPlayer.equipment.shield) equipText += '🛡️';
     if (myPlayer.equipment.weapon) equipText += '⚔️';
@@ -382,7 +511,6 @@ function draw() {
         ctx.fillText(equipText, screenX, screenY + myPlayer.radius + 18);
     }
     
-    // Vẽ minimap
     drawMinimap();
     
     requestAnimationFrame(draw);
@@ -391,7 +519,6 @@ function draw() {
 // ====================== VẼ MAP ======================
 
 function drawMap() {
-    // Vẽ từng ô
     for (let row = 0; row < 10; row++) {
         for (let col = 0; col < 10; col++) {
             const type = mapData[row]?.[col] || 'grass';
@@ -416,7 +543,6 @@ function drawMap() {
         }
     }
     
-    // Vẽ cửa hang
     caveData.forEach(cave => {
         const x = cave.x - camera.x;
         const y = cave.y - camera.y;
@@ -433,7 +559,6 @@ function drawMap() {
             ctx.textAlign = 'center';
             ctx.fillText('🏔️', x, y - 18);
             
-            // Nếu đang ở gần, highlight
             if (myPlayer) {
                 const dist = Math.sqrt((myPlayer.x - cave.x) ** 2 + (myPlayer.y - cave.y) ** 2);
                 if (dist < 60) {
@@ -455,7 +580,6 @@ function drawMap() {
 function drawMinimap(highlightX = null, highlightY = null) {
     minimapCtx.clearRect(0, 0, 150, 150);
     
-    // Vẽ map thu nhỏ
     const scale = 150 / 1000;
     for (let row = 0; row < 10; row++) {
         for (let col = 0; col < 10; col++) {
@@ -473,7 +597,6 @@ function drawMinimap(highlightX = null, highlightY = null) {
         }
     }
     
-    // Vẽ người chơi
     Object.values(gameData.players).forEach(p => {
         const x = p.x * scale;
         const y = p.y * scale;
@@ -483,7 +606,6 @@ function drawMinimap(highlightX = null, highlightY = null) {
         minimapCtx.fill();
     });
     
-    // Vẽ quái
     gameData.monsters.forEach(m => {
         const x = m.x * scale;
         const y = m.y * scale;
@@ -491,7 +613,6 @@ function drawMinimap(highlightX = null, highlightY = null) {
         minimapCtx.fillRect(x - 1, y - 1, 2, 2);
     });
     
-    // Vẽ highlight (radar)
     if (highlightX !== null && highlightY !== null) {
         minimapCtx.strokeStyle = '#ffd700';
         minimapCtx.lineWidth = 2;
@@ -500,7 +621,6 @@ function drawMinimap(highlightX = null, highlightY = null) {
         minimapCtx.stroke();
     }
     
-    // Viewport
     const vx = camera.x * scale;
     const vy = camera.y * scale;
     const vw = canvas.width * scale;
@@ -509,8 +629,6 @@ function drawMinimap(highlightX = null, highlightY = null) {
     minimapCtx.lineWidth = 1;
     minimapCtx.strokeRect(vx, vy, vw, vh);
 }
-
-// ====================== MATERIAL COLOR ======================
 
 function getMaterialColor(material) {
     const colors = {
@@ -522,86 +640,21 @@ function getMaterialColor(material) {
     return colors[material] || '#888';
 }
 
-// ====================== SỰ KIỆN CHUỘT ======================
+// ====================== KHỞI CHẠY ======================
 
-canvas.addEventListener('mousemove', (e) => {
-    const rect = canvas.getBoundingClientRect();
-    const scaleX = canvas.width / rect.width;
-    const scaleY = canvas.height / rect.height;
-    mouseX = (e.clientX - rect.left) * scaleX;
-    mouseY = (e.clientY - rect.top) * scaleY;
-});
+console.log('🐝 Hive.io đang khởi động...');
+console.log('⌨️ WASD để di chuyển');
+console.log('🖱️ Click chuột trái để tấn công quái');
+console.log('🔨 Phím C để mở Craft');
+console.log('🏔️ Phím E để vào/ra hang');
 
-canvas.addEventListener('click', (e) => {
-    // Di chuyển đến vị trí click
-    const rect = canvas.getBoundingClientRect();
-    const scaleX = canvas.width / rect.width;
-    const scaleY = canvas.height / rect.height;
-    const worldX = (e.clientX - rect.left) * scaleX + camera.x;
-    const worldY = (e.clientY - rect.top) * scaleY + camera.y;
-    
-    // Kiểm tra click vào quái để tấn công
-    let attacked = false;
-    gameData.monsters.forEach(monster => {
-        const screenX = monster.x - camera.x;
-        const screenY = monster.y - camera.y;
-        const dist = Math.sqrt(
-            (mouseX - screenX) ** 2 + 
-            (mouseY - screenY) ** 2
-        );
-        if (dist < monster.size + 10) {
-            socket.emit('attack', monster.id);
-            attacked = true;
-        }
-    });
-    
-    // Nếu không tấn công thì di chuyển
-    if (!attacked) {
-        targetX = worldX;
-        targetY = worldY;
-        isMoving = true;
-    }
-});
-
-// Di chuyển liên tục theo target
-function updateMovement() {
-    if (!myPlayer) return;
-    
-    if (isMoving) {
-        const dx = targetX - myPlayer.x;
-        const dy = targetY - myPlayer.y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        
-        if (dist < 2) {
-            isMoving = false;
-            return;
-        }
-        
-        const speed = myPlayer.speed * (myPlayer.speedMod || 1);
-        myPlayer.x += (dx / dist) * Math.min(speed, dist);
-        myPlayer.y += (dy / dist) * Math.min(speed, dist);
-        
-        // Gửi vị trí lên server
-        socket.emit('move', { x: myPlayer.x, y: myPlayer.y });
-    }
-    
-    // Nhặt đồ tự động
-    gameData.items.forEach(item => {
-        const dist = Math.sqrt((myPlayer.x - item.x) ** 2 + (myPlayer.y - item.y) ** 2);
-        if (dist < 50) {
-            socket.emit('pickup');
-        }
-    });
-    
-    requestAnimationFrame(updateMovement);
-}
-
-// ====================== KHỞI CHẠY GAME ======================
+setTimeout(() => {
+    console.log('🚀 Game đã sẵn sàng!');
+}, 1000);
 
 draw();
 updateMovement();
 
-// Xử lý resize canvas
 function resizeCanvas() {
     const ratio = canvas.width / canvas.height;
     let w = window.innerWidth - 20;
@@ -616,8 +669,3 @@ function resizeCanvas() {
 }
 window.addEventListener('resize', resizeCanvas);
 resizeCanvas();
-
-console.log('🐝 Hive.io đã sẵn sàng!');
-console.log('📖 Hướng dẫn: Di chuyển (click chuột phải), Tấn công (click chuột trái vào quái)');
-console.log('🔨 Craft: Phím C');
-console.log('🏔️ Vào hang: Phím E (gần cửa hang)');
